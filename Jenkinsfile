@@ -18,19 +18,26 @@ pipeline {
         }
 
         stage('Build Docker Image') {
-            steps {
-                echo 'Building Docker image now ...'
+    steps {
+        script {
+            env.GIT_SHA_SHORT = sh(
+                script: 'git rev-parse --short HEAD',
+                returnStdout: true
+            ).trim()
 
-                sh '''
-                    docker build \
-                      -t ${DOCKER_IMAGE}:${BUILD_NUMBER} .
-
-                    docker tag \
-                      ${DOCKER_IMAGE}:${BUILD_NUMBER} \
-                      ${DOCKER_IMAGE}:latest
-                '''
-            }
+            echo "Git Commit: ${env.GIT_SHA_SHORT}"
+            echo "Jenkins Build: ${env.BUILD_NUMBER}"
         }
+
+        sh '''
+            docker build \
+              -t ${DOCKER_IMAGE}:${BUILD_NUMBER} \
+              -t ${DOCKER_IMAGE}:${GIT_SHA_SHORT} \
+              -t ${DOCKER_IMAGE}:latest \
+              .
+        '''
+    }
+}
 
         stage('Test Docker Image') {
             steps {
@@ -54,53 +61,52 @@ pipeline {
         }
 
         stage('Push to Docker Hub') {
-            steps {
+    steps {
+        withCredentials([
+            usernamePassword(
+                credentialsId: 'dockerhub-credentials',
+                usernameVariable: 'DOCKER_USERNAME',
+                passwordVariable: 'DOCKER_PASSWORD'
+            )
+        ]) {
+            sh '''
+                echo "$DOCKER_PASSWORD" | docker login \
+                  -u "$DOCKER_USERNAME" \
+                  --password-stdin
 
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub-credentials',
-                        usernameVariable: 'DOCKER_USERNAME',
-                        passwordVariable: 'DOCKER_PASSWORD'
-                    )
-                ]) {
+                docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
 
-                    sh '''
-                        echo "$DOCKER_PASSWORD" | docker login \
-                          -u "$DOCKER_USERNAME" \
-                          --password-stdin
+                docker push ${DOCKER_IMAGE}:${GIT_SHA_SHORT}
 
-                        docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
+                docker push ${DOCKER_IMAGE}:latest
 
-                        docker push ${DOCKER_IMAGE}:latest
-
-                        docker logout
-                    '''
-                }
-            }
+                docker logout
+            '''
         }
+    }
+}
 
         stage('Deploy to Application Server') {
-            steps {
+    steps {
+        sshagent(['app-server-ssh']) {
+            sh '''
+                ssh -o StrictHostKeyChecking=no \
+                    ubuntu@${APP_SERVER} \
+                    "
+                    docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER} &&
 
-                sshagent(['app-server-ssh']) {
+                    docker rm -f employee-portal || true &&
 
-                    sh '''
-                        ssh -o StrictHostKeyChecking=no \
-                            ubuntu@${APP_SERVER} \
-                            "
-                            docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER} &&
-
-                            docker rm -f employee-portal || true &&
-
-                            docker run -d \
-                              --name employee-portal \
-                              -p 80:80 \
-                              ${DOCKER_IMAGE}:${BUILD_NUMBER}
-                            "
-                    '''
-                }
-            }
+                    docker run -d \
+                      --name employee-portal \
+                      --restart unless-stopped \
+                      -p 80:80 \
+                      ${DOCKER_IMAGE}:${BUILD_NUMBER}
+                    "
+            '''
         }
+    }
+}
 
         stage('Health Check') {
             steps {
