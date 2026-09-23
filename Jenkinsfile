@@ -93,50 +93,135 @@ pipeline {
                 ssh -o StrictHostKeyChecking=no \
                     ubuntu@${APP_SERVER} \
                     "
-                    docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER} &&
+                    set -e
 
-                    docker rm -f employee-portal || true &&
+                    echo 'Pulling new image...'
+
+                    docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER}
+
+                    echo 'Getting currently deployed image...'
+
+                    CURRENT_IMAGE=\\$(docker inspect \
+                        --format='{{.Config.Image}}' \
+                        employee-portal 2>/dev/null || true)
+
+                    echo \\\"Current image: \\$CURRENT_IMAGE\\\"
+
+                    echo 'Saving previous image...'
+
+                    echo \\\"\\$CURRENT_IMAGE\\\" > /tmp/employee-portal-previous-image
+
+                    echo 'Removing old container...'
+
+                    docker rm -f employee-portal || true
+
+                    echo 'Starting new container...'
 
                     docker run -d \
                       --name employee-portal \
                       --restart unless-stopped \
                       -p 80:80 \
                       ${DOCKER_IMAGE}:${BUILD_NUMBER}
+
+                    echo 'Deployment completed.'
+                    "
+            '''
+        }
+    }
+}
+stage('Deploy to Application Server') {
+    steps {
+        sshagent(['app-server-ssh']) {
+            sh '''
+                ssh -o StrictHostKeyChecking=no \
+                    ubuntu@${APP_SERVER} \
+                    "
+                    set -e
+
+                    echo 'Pulling new image...'
+
+                    docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER}
+
+                    echo 'Getting currently deployed image...'
+
+                    CURRENT_IMAGE=\\$(docker inspect \
+                        --format='{{.Config.Image}}' \
+                        employee-portal 2>/dev/null || true)
+
+                    echo \\\"Current image: \\$CURRENT_IMAGE\\\"
+
+                    echo 'Saving previous image...'
+
+                    echo \\\"\\$CURRENT_IMAGE\\\" > /tmp/employee-portal-previous-image
+
+                    echo 'Removing old container...'
+
+                    docker rm -f employee-portal || true
+
+                    echo 'Starting new container...'
+
+                    docker run -d \
+                      --name employee-portal \
+                      --restart unless-stopped \
+                      -p 80:80 \
+                      ${DOCKER_IMAGE}:${BUILD_NUMBER}
+
+                    echo 'Deployment completed.'
                     "
             '''
         }
     }
 }
 
-        stage('Health Check') {
-            steps {
-
-                sh '''
-                    sleep 5
-
-                    curl -f http://51.20.70.198/
-                '''
-            }
-        }
-    }
-
-    post {
-
-        success {
-            echo '======================================'
-            echo 'Employee Portal deployment successful!'
-            echo '======================================'
-        }
-
-        failure {
-            echo '======================================'
-            echo 'Employee Portal pipeline failed!'
-            echo '======================================'
-        }
-
-        always {
+       stage('Health Check') {
+    steps {
+        sshagent(['app-server-ssh']) {
             sh '''
-                docker rm -f employee-portal-test || true
+                set +e
+
+                echo 'Waiting for application to start...'
+                sleep 5
+
+                echo 'Running health check...'
+
+                ssh -o StrictHostKeyChecking=no \
+                    ubuntu@${APP_SERVER} \
+                    "curl -f http://localhost"
+
+                HEALTH_STATUS=$?
+
+                if [ $HEALTH_STATUS -eq 0 ]; then
+
+                    echo '====================================='
+                    echo 'Health check PASSED'
+                    echo 'Deployment successful'
+                    echo '====================================='
+
+                else
+
+                    echo '====================================='
+                    echo 'Health check FAILED'
+                    echo 'Starting rollback'
+                    echo '====================================='
+
+                    ssh -o StrictHostKeyChecking=no \
+                        ubuntu@${APP_SERVER} \
+                        "
+                        PREVIOUS_IMAGE=\\$(cat /tmp/employee-portal-previous-image)
+
+                        echo \\\"Rolling back to: \\$PREVIOUS_IMAGE\\\"
+
+                        docker rm -f employee-portal || true
+
+                        docker run -d \
+                          --name employee-portal \
+                          --restart unless-stopped \
+                          -p 80:80 \
+                          \\$PREVIOUS_IMAGE
+                        "
+
+                    exit 1
+                fi
             '''
         }
     }
