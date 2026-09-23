@@ -31,7 +31,7 @@ pipeline {
 
                 sh '''
                     docker build \
-                      -t ${DOCKER_IMAGE}:${GIT_SHA_SHORT} \
+                      -t ${DOCKER_IMAGE}:${BUILD_NUMBER} \
                       .
                 '''
             }
@@ -47,7 +47,7 @@ pipeline {
                     docker run -d \
                       --name employee-portal-test \
                       -p 8082:80 \
-                      ${DOCKER_IMAGE}:${GIT_SHA_SHORT}
+                      ${DOCKER_IMAGE}:${BUILD_NUMBER}
 
                     sleep 5
 
@@ -72,7 +72,7 @@ pipeline {
                           -u "$DOCKER_USERNAME" \
                           --password-stdin
 
-                        docker push ${DOCKER_IMAGE}:${GIT_SHA_SHORT}
+                        docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
 
                         docker logout
                     '''
@@ -105,7 +105,7 @@ pipeline {
 
                         ssh -o StrictHostKeyChecking=no \
                             ubuntu@${APP_SERVER} \
-                            "docker pull ${DOCKER_IMAGE}:${GIT_SHA_SHORT}"
+                            "docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER}"
 
                         echo 'Removing old container...'
 
@@ -121,7 +121,7 @@ pipeline {
                               --name employee-portal \
                               --restart unless-stopped \
                               -p 80:80 \
-                              ${DOCKER_IMAGE}:${GIT_SHA_SHORT}"
+                              ${DOCKER_IMAGE}:${BUILD_NUMBER}"
 
                         echo 'Deployment completed.'
                     '''
@@ -134,6 +134,7 @@ pipeline {
                 sshagent(['app-server-ssh']) {
                     sh '''
                         echo 'Waiting for application to start...'
+
                         sleep 5
 
                         echo 'Running health check...'
@@ -141,13 +142,16 @@ pipeline {
                         ssh -o StrictHostKeyChecking=no \
                             ubuntu@${APP_SERVER} \
                             "curl -f http://localhost"
-                    }
+
+                        echo 'Health check passed.'
+                    '''
                 }
             }
         }
     }
 
     post {
+
         success {
             echo 'Employee Portal pipeline completed successfully!'
         }
