@@ -85,96 +85,81 @@ pipeline {
             }
         }
 
+        
         stage('Deploy to Application Server 1') {
-            steps {
+    steps {
+        sshagent(['app-server-ssh']) {
+            sh '''
+                echo "Deploying build ${BUILD_NUMBER} to App Server 1..."
 
-                sshagent(['app-server-ssh']) {
+                ssh -o StrictHostKeyChecking=no \
+                    ubuntu@${APP_SERVER_1} \
+                    "
+                    set -e
 
-                    sh '''
-                        echo "Deploying build ${BUILD_NUMBER} to App Server 1..."
+                    echo 'Pulling new image...'
+                    docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER}
 
-                        ssh -o StrictHostKeyChecking=no \
-                            ubuntu@${APP_SERVER_1} << EOF
+                    echo 'Removing old container...'
+                    docker rm -f employee-portal || true
 
-                        set -e
+                    echo 'Starting new container...'
+                    docker run -d \
+                      --name employee-portal \
+                      --restart unless-stopped \
+                      -p 80:80 \
+                      ${DOCKER_IMAGE}:${BUILD_NUMBER}
 
-                        echo "Pulling new image..."
+                    echo 'Waiting for application...'
+                    sleep 5
 
-                        docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER}
+                    echo 'Running health check...'
+                    curl -f http://localhost
 
-                        echo "Removing old container..."
-
-                        docker rm -f employee-portal || true
-
-                        echo "Starting new container..."
-
-                        docker run -d \
-                          --name employee-portal \
-                          --restart unless-stopped \
-                          -p 80:80 \
-                          ${DOCKER_IMAGE}:${BUILD_NUMBER}
-
-                        echo "Waiting for application..."
-
-                        sleep 5
-
-                        echo "Running health check..."
-
-                        curl -f http://localhost
-
-                        echo "App Server 1 deployment successful."
-
-                        EOF
-                    '''
-                }
-            }
-        }
-
-        stage('Deploy to Application Server 2') {
-            steps {
-
-                sshagent(['app-server-ssh']) {
-
-                    sh '''
-                        echo "Deploying build ${BUILD_NUMBER} to App Server 2..."
-
-                        ssh -o StrictHostKeyChecking=no \
-                            ubuntu@${APP_SERVER_2} << EOF
-
-                        set -e
-
-                        echo "Pulling new image..."
-
-                        docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER}
-
-                        echo "Removing old container..."
-
-                        docker rm -f employee-portal || true
-
-                        echo "Starting new container..."
-
-                        docker run -d \
-                          --name employee-portal \
-                          --restart unless-stopped \
-                          -p 80:80 \
-                          ${DOCKER_IMAGE}:${BUILD_NUMBER}
-
-                        echo "Waiting for application..."
-
-                        sleep 5
-
-                        echo "Running health check..."
-
-                        curl -f http://localhost
-
-                        echo "App Server 2 deployment successful."
-
-                        EOF
-                    '''
-                }
-            }
+                    echo 'App Server 1 deployment successful.'
+                    "
+            '''
         }
     }
+}
+
+stage('Deploy to Application Server 2') {
+    steps {
+        sshagent(['app-server-ssh']) {
+            sh '''
+                echo "Deploying build ${BUILD_NUMBER} to App Server 2..."
+
+                ssh -o StrictHostKeyChecking=no \
+                    ubuntu@${APP_SERVER_2} \
+                    "
+                    set -e
+
+                    echo 'Pulling new image...'
+                    docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER}
+
+                    echo 'Removing old container...'
+                    docker rm -f employee-portal || true
+
+                    echo 'Starting new container...'
+                    docker run -d \
+                      --name employee-portal \
+                      --restart unless-stopped \
+                      -p 80:80 \
+                      ${DOCKER_IMAGE}:${BUILD_NUMBER}
+
+                    echo 'Waiting for application...'
+                    sleep 5
+
+                    echo 'Running health check...'
+                    curl -f http://localhost
+
+                    echo 'App Server 2 deployment successful.'
+                    "
+            '''
+        }
+    }
+}
+}
 
     post {
 
