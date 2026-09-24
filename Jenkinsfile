@@ -19,6 +19,7 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
+
                 script {
                     env.GIT_SHA_SHORT = sh(
                         script: 'git rev-parse --short HEAD',
@@ -31,15 +32,13 @@ pipeline {
 
                 sh '''
                     docker build \
-                      -t ${DOCKER_IMAGE}:${BUILD_NUMBER} \
-                      .
+                      -t ${DOCKER_IMAGE}:${BUILD_NUMBER} .
                 '''
             }
         }
 
         stage('Test Docker Image') {
             steps {
-                echo 'Testing Docker image...'
 
                 sh '''
                     docker rm -f employee-portal-test || true
@@ -60,6 +59,7 @@ pipeline {
 
         stage('Push to Docker Hub') {
             steps {
+
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'dockerhub-credentials',
@@ -67,6 +67,7 @@ pipeline {
                         passwordVariable: 'DOCKER_PASSWORD'
                     )
                 ]) {
+
                     sh '''
                         echo "$DOCKER_PASSWORD" | docker login \
                           -u "$DOCKER_USERNAME" \
@@ -82,7 +83,9 @@ pipeline {
 
         stage('Save Previous Version') {
             steps {
+
                 sshagent(['app-server-ssh']) {
+
                     sh '''
                         ssh -o StrictHostKeyChecking=no \
                             ubuntu@${APP_SERVER} \
@@ -92,59 +95,117 @@ pipeline {
                               2>/dev/null \
                               > /tmp/employee-portal-previous-image \
                               || true"
+
+                        echo 'Previous version saved.'
                     '''
                 }
             }
         }
 
-        stage('Deploy to Application Server') {
+        stage('Deploy and Verify') {
             steps {
-                sshagent(['app-server-ssh']) {
-                    sh '''
-                        echo 'Pulling new image...'
 
-                        ssh -o StrictHostKeyChecking=no \
-                            ubuntu@${APP_SERVER} \
-                            "docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                script {
 
-                        echo 'Removing old container...'
+                    try {
 
-                        ssh -o StrictHostKeyChecking=no \
-                            ubuntu@${APP_SERVER} \
-                            "docker rm -f employee-portal || true"
+                        sshagent(['app-server-ssh']) {
 
-                        echo 'Starting new container...'
+                            sh '''
+                                echo 'Pulling new image...'
 
-                        ssh -o StrictHostKeyChecking=no \
-                            ubuntu@${APP_SERVER} \
-                            "docker run -d \
-                              --name employee-portal \
-                              --restart unless-stopped \
-                              -p 80:80 \
-                              ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                                ssh -o StrictHostKeyChecking=no \
+                                    ubuntu@${APP_SERVER} \
+                                    "docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER}"
 
-                        echo 'Deployment completed.'
-                    '''
-                }
-            }
-        }
+                                echo 'Removing old container...'
 
-        stage('Health Check') {
-            steps {
-                sshagent(['app-server-ssh']) {
-                    sh '''
-                        echo 'Waiting for application to start...'
+                                ssh -o StrictHostKeyChecking=no \
+                                    ubuntu@${APP_SERVER} \
+                                    "docker rm -f employee-portal || true"
 
-                        sleep 5
+                                echo 'Starting new container...'
 
-                        echo 'Running health check...'
+                                ssh -o StrictHostKeyChecking=no \
+                                    ubuntu@${APP_SERVER} \
+                                    "docker run -d \
+                                      --name employee-portal \
+                                      --restart unless-stopped \
+                                      -p 80:80 \
+                                      ${DOCKER_IMAGE}:${BUILD_NUMBER}"
 
-                        ssh -o StrictHostKeyChecking=no \
-                            ubuntu@${APP_SERVER} \
-                            "curl -f http://localhost"
+                                echo 'Waiting for application...'
 
-                        echo 'Health check passed.'
-                    '''
+                                sleep 5
+
+                                echo 'Running health check...'
+
+                                ssh -o StrictHostKeyChecking=no \
+                                    ubuntu@${APP_SERVER} \
+                                    "curl -f http://localhost"
+
+                                echo 'New version health check PASSED.'
+                            '''
+                        }
+
+                    } catch (Exception e) {
+
+                        echo 'New version deployment FAILED.'
+                        echo 'Starting automatic rollback...'
+
+                        sshagent(['app-server-ssh']) {
+
+                            sh '''
+                                PREVIOUS_IMAGE=$(ssh \
+                                    -o StrictHostKeyChecking=no \
+                                    ubuntu@${APP_SERVER} \
+                                    "cat /tmp/employee-portal-previous-image 2>/dev/null || true")
+
+                                echo "Previous image: ${PREVIOUS_IMAGE}"
+
+                                if [ -z "$PREVIOUS_IMAGE" ]; then
+                                    echo "No previous version available for rollback."
+                                    exit 1
+                                fi
+
+                                echo "Pulling previous image..."
+
+                                ssh -o StrictHostKeyChecking=no \
+                                    ubuntu@${APP_SERVER} \
+                                    "docker pull ${PREVIOUS_IMAGE}"
+
+                                echo "Removing failed version..."
+
+                                ssh -o StrictHostKeyChecking=no \
+                                    ubuntu@${APP_SERVER} \
+                                    "docker rm -f employee-portal || true"
+
+                                echo "Starting previous version..."
+
+                                ssh -o StrictHostKeyChecking=no \
+                                    ubuntu@${APP_SERVER} \
+                                    "docker run -d \
+                                      --name employee-portal \
+                                      --restart unless-stopped \
+                                      -p 80:80 \
+                                      ${PREVIOUS_IMAGE}"
+
+                                echo "Waiting for rollback application..."
+
+                                sleep 5
+
+                                echo "Checking rollback health..."
+
+                                ssh -o StrictHostKeyChecking=no \
+                                    ubuntu@${APP_SERVER} \
+                                    "curl -f http://localhost"
+
+                                echo "Rollback completed successfully."
+                            '''
+                        }
+
+                        throw e
+                    }
                 }
             }
         }
