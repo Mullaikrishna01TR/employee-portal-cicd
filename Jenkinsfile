@@ -3,13 +3,16 @@ pipeline {
 
     environment {
         DOCKER_IMAGE = "mullaikrishna/employee-portal-cicd"
-        APP_SERVER = "172.31.18.62"
+
+        APP_SERVER_1 = "172.31.18.62"
+        APP_SERVER_2 = "172.31.40.2"
     }
 
     stages {
 
         stage('Checkout') {
             steps {
+
                 echo 'Checking out source code...'
 
                 git branch: 'main',
@@ -21,6 +24,7 @@ pipeline {
             steps {
 
                 script {
+
                     env.GIT_SHA_SHORT = sh(
                         script: 'git rev-parse --short HEAD',
                         returnStdout: true
@@ -81,131 +85,92 @@ pipeline {
             }
         }
 
-        stage('Save Previous Version') {
+        stage('Deploy to Application Server 1') {
             steps {
 
                 sshagent(['app-server-ssh']) {
 
                     sh '''
-                        ssh -o StrictHostKeyChecking=no \
-                            ubuntu@${APP_SERVER} \
-                            "docker inspect \
-                              --format='{{.Config.Image}}' \
-                              employee-portal \
-                              2>/dev/null \
-                              > /tmp/employee-portal-previous-image \
-                              || true"
+                        echo "Deploying build ${BUILD_NUMBER} to App Server 1..."
 
-                        echo 'Previous version saved.'
+                        ssh -o StrictHostKeyChecking=no \
+                            ubuntu@${APP_SERVER_1} << EOF
+
+                        set -e
+
+                        echo "Pulling new image..."
+
+                        docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER}
+
+                        echo "Removing old container..."
+
+                        docker rm -f employee-portal || true
+
+                        echo "Starting new container..."
+
+                        docker run -d \
+                          --name employee-portal \
+                          --restart unless-stopped \
+                          -p 80:80 \
+                          ${DOCKER_IMAGE}:${BUILD_NUMBER}
+
+                        echo "Waiting for application..."
+
+                        sleep 5
+
+                        echo "Running health check..."
+
+                        curl -f http://localhost
+
+                        echo "App Server 1 deployment successful."
+
+                        EOF
                     '''
                 }
             }
         }
 
-        stage('Deploy and Verify') {
+        stage('Deploy to Application Server 2') {
             steps {
 
-                script {
+                sshagent(['app-server-ssh']) {
 
-                    try {
+                    sh '''
+                        echo "Deploying build ${BUILD_NUMBER} to App Server 2..."
 
-                        sshagent(['app-server-ssh']) {
+                        ssh -o StrictHostKeyChecking=no \
+                            ubuntu@${APP_SERVER_2} << EOF
 
-                            sh '''
-                                echo 'Pulling new image...'
+                        set -e
 
-                                ssh -o StrictHostKeyChecking=no \
-                                    ubuntu@${APP_SERVER} \
-                                    "docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                        echo "Pulling new image..."
 
-                                echo 'Removing old container...'
+                        docker pull ${DOCKER_IMAGE}:${BUILD_NUMBER}
 
-                                ssh -o StrictHostKeyChecking=no \
-                                    ubuntu@${APP_SERVER} \
-                                    "docker rm -f employee-portal || true"
+                        echo "Removing old container..."
 
-                                echo 'Starting new container...'
+                        docker rm -f employee-portal || true
 
-                                ssh -o StrictHostKeyChecking=no \
-                                    ubuntu@${APP_SERVER} \
-                                    "docker run -d \
-                                      --name employee-portal \
-                                      --restart unless-stopped \
-                                      -p 80:80 \
-                                      ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                        echo "Starting new container..."
 
-                                echo 'Waiting for application...'
+                        docker run -d \
+                          --name employee-portal \
+                          --restart unless-stopped \
+                          -p 80:80 \
+                          ${DOCKER_IMAGE}:${BUILD_NUMBER}
 
-                                sleep 5
+                        echo "Waiting for application..."
 
-                                echo 'Running health check...'
+                        sleep 5
 
-                                ssh -o StrictHostKeyChecking=no \
-                                    ubuntu@${APP_SERVER} \
-                                    "curl -f http://localhost"
+                        echo "Running health check..."
 
-                                echo 'New version health check PASSED.'
-                            '''
-                        }
+                        curl -f http://localhost
 
-                    } catch (Exception e) {
+                        echo "App Server 2 deployment successful."
 
-                        echo 'New version deployment FAILED.'
-                        echo 'Starting automatic rollback...'
-
-                        sshagent(['app-server-ssh']) {
-
-                            sh '''
-                                PREVIOUS_IMAGE=$(ssh \
-                                    -o StrictHostKeyChecking=no \
-                                    ubuntu@${APP_SERVER} \
-                                    "cat /tmp/employee-portal-previous-image 2>/dev/null || true")
-
-                                echo "Previous image: ${PREVIOUS_IMAGE}"
-
-                                if [ -z "$PREVIOUS_IMAGE" ]; then
-                                    echo "No previous version available for rollback."
-                                    exit 1
-                                fi
-
-                                echo "Pulling previous image..."
-
-                                ssh -o StrictHostKeyChecking=no \
-                                    ubuntu@${APP_SERVER} \
-                                    "docker pull ${PREVIOUS_IMAGE}"
-
-                                echo "Removing failed version..."
-
-                                ssh -o StrictHostKeyChecking=no \
-                                    ubuntu@${APP_SERVER} \
-                                    "docker rm -f employee-portal || true"
-
-                                echo "Starting previous version..."
-
-                                ssh -o StrictHostKeyChecking=no \
-                                    ubuntu@${APP_SERVER} \
-                                    "docker run -d \
-                                      --name employee-portal \
-                                      --restart unless-stopped \
-                                      -p 80:80 \
-                                      ${PREVIOUS_IMAGE}"
-
-                                echo "Waiting for rollback application..."
-
-                                sleep 5
-
-                                echo "Checking rollback health..."
-
-                                ssh -o StrictHostKeyChecking=no \
-                                    ubuntu@${APP_SERVER} \
-                                    "curl -f http://localhost"
-
-                                echo "Rollback completed successfully."
-                            '''
-                        }
-
-                        throw e
-                    }
+                        EOF
+                    '''
                 }
             }
         }
@@ -214,11 +179,11 @@ pipeline {
     post {
 
         success {
-            echo 'Employee Portal pipeline completed successfully!'
+            echo 'Employee Portal rolling deployment completed successfully!'
         }
 
         failure {
-            echo 'Employee Portal pipeline failed.'
+            echo 'Employee Portal deployment failed.'
         }
 
         always {
